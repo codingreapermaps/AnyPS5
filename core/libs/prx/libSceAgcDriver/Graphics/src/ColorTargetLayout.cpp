@@ -47,7 +47,7 @@ ColorTileMode DecodeColorTileMode(std::uint32_t attrib3) {
     require((attrib3 & 0x80002000u) == 0 && ((resourceType == 0 && (attrib3 & 0x1fffu) == 0) || resourceType == 1 || resourceType == 2) && ((attrib3 >> 27u) & 7u) == 1, "AGC graphics: unsupported color depth, dimension, resource level or metadata mode");
     const auto mode = (attrib3 >> 14u) & 0x1fu;
     const auto fmaskMode = (attrib3 >> 19u) & 0x1fu;
-    require(mode == 0 || mode == 5 || mode == 9 || mode == 0x15 || mode == 0x16 || mode == 0x1a || mode == 0x1b, "AGC graphics: unsupported color tile mode");
+    require(mode == 0 || mode == 5 || mode == 9 || mode == 0x15 || mode == 0x16 || mode == 0x18 || mode == 0x1a || mode == 0x1b, ("AGC graphics: unsupported color tile mode " + std::to_string(mode) + " (CB_COLOR_ATTRIB3 " + std::to_string(attrib3) + ")").c_str());
     require(fmaskMode == 0 || fmaskMode == 0x18 || fmaskMode == (mode & ~3u), "AGC graphics: unsupported color FMASK swizzle mode");
     require(resourceType != 0 || mode == 0 || mode == 0x1b, "AGC graphics: 1D color targets with a standard swizzle mode are invalid");
     return static_cast<ColorTileMode>(mode);
@@ -74,9 +74,9 @@ struct SwizzleTables {
 };
 
 const SwizzleTables& equationTables(ColorTileMode mode, std::uint32_t bytesPerElement, std::uint32_t blockWidth, std::uint32_t blockHeight) {
-    static std::once_flag once[4][5];
-    static SwizzleTables tables[4][5];
-    const auto modeIndex = mode == ColorTileMode::S4KBX ? 0u : mode == ColorTileMode::D4KBX ? 1u : mode == ColorTileMode::D64KBX ? 2u : 3u;
+    static std::once_flag once[5][5];
+    static SwizzleTables tables[5][5];
+    const auto modeIndex = mode == ColorTileMode::S4KBX ? 0u : mode == ColorTileMode::D4KBX ? 1u : mode == ColorTileMode::D64KBX ? 2u : mode == ColorTileMode::Z64KBX ? 4u : 3u;
     const auto index = static_cast<std::size_t>(std::countr_zero(bytesPerElement));
     std::call_once(once[modeIndex][index], [&] {
         const auto* equation = FindTextureSwizzleEquation(static_cast<std::uint32_t>(mode), bytesPerElement);
@@ -129,6 +129,7 @@ ColorTargetLayout::ColorTargetLayout(std::uint32_t width, std::uint32_t height, 
         case ColorTileMode::S4KBX:
         case ColorTileMode::D4KBX:
         case ColorTileMode::D64KBX:
+        case ColorTileMode::Z64KBX:
         case ColorTileMode::RenderTarget: {
             const auto log2Elements = static_cast<std::uint32_t>(std::countr_zero(ColorTileModeBlockBytes(mode))) - static_cast<std::uint32_t>(std::countr_zero(bytesPerElement));
             blockWidth = 1u << ((log2Elements + 1u) / 2u);
@@ -155,7 +156,7 @@ ColorTargetLayout::ColorTargetLayout(std::uint32_t width, std::uint32_t height, 
             yOffsets = tables.y.data();
             break;
         }
-        default: throw std::runtime_error("AGC graphics: unsupported color tile mode");
+        default: throw std::runtime_error("AGC graphics: unsupported color tile mode " + std::to_string(static_cast<std::uint32_t>(mode)) + " in a color target layout");
     }
     const auto size = static_cast<std::uint64_t>(pitch) * paddedHeight * bytesPerElement;
     require(size <= std::numeric_limits<std::size_t>::max(), "AGC graphics: color surface size overflow");

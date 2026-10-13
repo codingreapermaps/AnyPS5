@@ -525,7 +525,7 @@ DecodedColorFormat DecodeColorFormat(std::uint32_t format, std::uint32_t number,
             return {VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4};
         case 7:
             if (swap != 0 || number != floating) return fail();
-            return {VK_FORMAT_R32_UINT, 4, 0xe4u, ShaderRecompiler::ColorExportPacking::Float11_11_10};
+            return {VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4};
         case 9:
             // COLOR_2_10_10_10 keeps red in the low bits, the Vulkan A2B10G10R10 packing.
             if (number != unorm) return fail();
@@ -681,7 +681,10 @@ std::string DepthMaintenanceRejection(const QueueState& queue) {
     const auto depthControl = find(queue.context, 0x200);
     const bool colorMasks = find(queue.context, 0x8e) != queue.context.end() && find(queue.context, 0x8f) != queue.context.end();
     if ((control->second & ~0x2063u) == 0x10u && depthControl != queue.context.end() && (depthControl->second & 3u) == 0 && colorMasks && ColorWriteMask(queue.context) == 0) return {};
-    return zeroMessage(0x000, control->second, "DB_RENDER_CONTROL depth copy, resummarize or decompress");
+    char detail[256];
+    const auto value = [&](std::uint32_t reg) { const auto it = find(queue.context, reg); return it == queue.context.end() ? 0xffffffffu : it->second; };
+    std::snprintf(detail, sizeof(detail), " [DB_Z_INFO 0x%08x DB_DEPTH_CONTROL 0x%08x DB_Z_READ_BASE 0x%08x CB0_INFO 0x%08x CB0_ATTRIB 0x%08x CB0_BASE 0x%08x CB_TARGET_MASK 0x%08x CB_SHADER_MASK 0x%08x DB_DEPTH_SIZE_XY 0x%08x]", value(0x010), value(0x200), value(0x012), value(0x31c), value(0x31d), value(0x318), value(0x8e), value(0x8f), value(0x007));
+    return zeroMessage(0x000, control->second, "DB_RENDER_CONTROL depth copy, resummarize or decompress") + detail;
 }
 
 State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
@@ -1184,6 +1187,28 @@ ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot) {
         GuestMemory::CheckRange(reinterpret_cast<const void*>(color.address), color.bytes, colorLayout.Alignment(), true);
     }
     return color;
+}
+
+std::optional<DepthCopyPass> DecodeDepthCopyPass(const QueueState& queue) {
+    const auto& cx = queue.context;
+    const auto control = find(cx, 0x000);
+    if (control == cx.end() || (control->second & 4u) == 0) return std::nullopt;
+    Require((control->second & ~0xf84u) == 0, "DB depth copy combined with a stencil copy, clear, resummarize or decompress");
+    Require((read(cx, 0x200) & 0xfu) == 0, "DB depth copy with depth or stencil tests");
+    Require((read(cx, 0x010) & 3u) == 3u, "DB depth copy from a depth plane that is not Z_32_FLOAT");
+    Require(ColorWriteMask(cx) == 1u, "DB depth copy into anything but the red channel of color target 0");
+    DepthCopyPass pass{};
+    const auto high = find(cx, 0x01a);
+    pass.depthAddress = (high == cx.end() ? 0ull : static_cast<std::uint64_t>(high->second & 0xffu) << 40u) | (static_cast<std::uint64_t>(read(cx, 0x012)) << 8u);
+    const auto size = read(cx, 0x007);
+    pass.extent = {(size & 0x3fffu) + 1u, ((size >> 16u) & 0x3fffu) + 1u};
+    pass.samples = 1u << ((read(cx, 0x010) >> 2u) & 3u);
+    pass.sample = (control->second & 0x80u) != 0 ? 0u : (control->second >> 8u) & 0xfu;
+    Require(pass.sample < pass.samples, "DB depth copy of a sample the depth plane does not have");
+    pass.color = DecodeColorBuffer(cx, 0);
+    Require(pass.color.format == VK_FORMAT_R32_SFLOAT && pass.color.samples == 1 && pass.color.mip == 0 && pass.color.layers == 1, "DB depth copy into a color target that is not a single-sample R32 float");
+    Require(pass.color.extent.width == pass.extent.width && pass.color.extent.height == pass.extent.height, "DB depth copy into a color target of another size");
+    return pass;
 }
 
 std::optional<ColorMetadataPass> DecodeColorMetadataPass(const QueueState& queue) {

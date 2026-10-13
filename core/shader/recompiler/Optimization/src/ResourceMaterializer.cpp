@@ -183,7 +183,7 @@ DecodedImage decodeImageDescriptor(const DescriptorValue& descriptor, const Imag
         }
     }
     decoded.conversionFormat = RemapTextureFormat(format) != format ? format : IrBufferFormat::Invalid;
-    if (format == IrBufferFormat::Format11_11_10UNorm || format == IrBufferFormat::Format10_11_11Float) {
+    if (format == IrBufferFormat::Format11_11_10UNorm) {
         const bool floating = format == IrBufferFormat::Format10_11_11Float;
         if (!base.srgbDecodeCompatible) throw std::runtime_error(floating ? "samples or gathers a converted float image, or queries its LOD, which is not implemented" : "sampling, gathering or querying LOD of a converted unorm image is not implemented");
         if (!base.depthBitsCompatible) throw std::runtime_error(floating ? "reads or writes a converted float image with 16-bit data, which is not implemented" : "reads or writes a converted unorm image with 16-bit data, which is not implemented");
@@ -706,7 +706,6 @@ std::vector<ImageResource> ResourceMaterializer::RuntimeImageModes(const ImageRe
             append(IrTextureNumericClass::Uint, IrBufferFormat::Format11_11_10UInt, IrBufferFormat::Invalid, false, false);
             if (image.srgbDecodeCompatible && image.depthBitsCompatible) {
                 append(IrTextureNumericClass::Uint, IrBufferFormat::Format11_11_10UNorm, IrBufferFormat::Invalid, false, false);
-                append(IrTextureNumericClass::Uint, IrBufferFormat::Format10_11_11Float, IrBufferFormat::Invalid, false, false);
             }
             if (!storage) {
                 if (image.depthBitsCompatible) {

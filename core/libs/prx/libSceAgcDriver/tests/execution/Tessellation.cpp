@@ -452,6 +452,18 @@ void RequireIntegerPartitioning(AgcDriver::VulkanDevice& device, const ShaderRec
     Require(CoveredPixels(2, false) > 100 && PixelAt(Column(2, 0.25f), center)[1] > 32, "integer partitioning: the level-5 patch has no interior domain points at its centre, " + PixelText(PixelAt(Column(2, 0.25f), center)));
 }
 
+void RequireFractionalEvenPartitioning(AgcDriver::VulkanDevice& device, const ShaderRecompiler::SpirvTarget& target) {
+    const auto center = Row(-0.5f + 1.0f / 3.0f);
+    const PatchDraw patches{{3u, 3u, 1u, 3u, 2u}, Indices};
+    const auto stages = CompileTriangles(target, patches);
+    Require(HasSpacing(stages.domain, spv::ExecutionModeSpacingFractionalEven) && !HasSpacing(stages.domain, spv::ExecutionModeSpacingFractionalOdd) && !HasSpacing(stages.domain, spv::ExecutionModeSpacingEqual), "fractional-even partitioning did not compile to fractional-even spacing");
+    Require(HasLevelBound(stages.hull, 64.0f) && !HasLevelBound(stages.hull, 63.0f), "fractional-even partitioning did not bound its tessellation factors at 64");
+    Draw(device, stages, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, patches);
+    Require(CoveredPixels(0, false) > 100 && PixelAt(Column(0, 0.25f), center)[1] > 32, "fractional-even partitioning: the level-1 patch was not raised to level 2 with a domain point at its centre, " + PixelText(PixelAt(Column(0, 0.25f), center)));
+    Require(CoveredPixels(1, false) == 0, "fractional-even partitioning: the patch with level 0 was not culled");
+    Require(CoveredPixels(2, false) > 100 && PixelAt(Column(2, 0.25f), center)[1] > 32, "fractional-even partitioning: the level-5 patch has no interior domain points at its centre, " + PixelText(PixelAt(Column(2, 0.25f), center)));
+}
+
 void RequireQuads(AgcDriver::VulkanDevice& device, const ShaderRecompiler::SpirvTarget& target) {
     const auto center = Row(0.0f);
     std::array<bool, 2> frontFacing{};
@@ -556,6 +568,7 @@ int main() {
         RequireCounterClockwise(*device, target);
         RequireLevelClamps(*device, target);
         RequireIntegerPartitioning(*device, target);
+        RequireFractionalEvenPartitioning(*device, target);
         RequireQuads(*device, target);
         RequirePatchConstants(*device, target);
         device.reset();

@@ -1,5 +1,7 @@
 #include <shared_mutex>
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/ColorTargetLayout.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Pipeline.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
@@ -61,8 +63,13 @@ public:
         if (sampleable) usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
         Check(context.imageFormatProperties(context.physical, target.format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &supported), "vkGetPhysicalDeviceImageFormatProperties multisampled target");
         Require((supported.sampleCounts & samples) != 0 && target.extent.width <= supported.maxExtent.width && target.extent.height <= supported.maxExtent.height, "multisampled render target exceeds device image limits");
+        storageFormat = HostStorageFormat(context, target.format);
+        VkImageFormatProperties storageSupported{};
+        if (storageFormat != VK_FORMAT_UNDEFINED && (context.imageFormatProperties(context.physical, storageFormat, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT, 0, &storageSupported) != VK_SUCCESS || (storageSupported.sampleCounts & samples) == 0)) storageFormat = VK_FORMAT_UNDEFINED;
+        if (storageFormat != VK_FORMAT_UNDEFINED) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         try {
             VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            if (storageFormat != VK_FORMAT_UNDEFINED) info.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
             info.imageType = VK_IMAGE_TYPE_2D;
             info.format = target.format;
             info.extent = {target.extent.width, target.extent.height, 1};
@@ -123,11 +130,44 @@ public:
         });
     }
 
+    void SettleStorageWrites() {
+        if (!storageWritten) return;
+        storageWritten = false;
+        recordCommands(context, [&](VkCommandBuffer commands, Recorder* recorder) {
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+            if (recorder != nullptr) Recorder::CountBarriers(Recorder::CommandClass::Draw, 1);
+        });
+    }
+
+    VkImageView Storage(VkFormat format) {
+        Require(storageFormat != VK_FORMAT_UNDEFINED, "the device cannot write the multisampled color target's format as a storage image at its sample count");
+        Require(format == storageFormat, "a storage image access to a multisampled color target in another format than the target's storage form is not implemented");
+        Require(cmask.Refusal().empty(), cmask.Refusal());
+        Require(cmask.Keys() != DccKeys::Clear0000, "a storage image access to a multisampled color target whose CMASK fast clear no draw has applied is not implemented");
+        Require(Recorder::Active() != nullptr, "a multisampled color target is only written by recorded dispatches");
+        ApplyFastClear(target);
+        if (storageView == VK_NULL_HANDLE) {
+            VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            viewInfo.image = image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = storageFormat;
+            viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            Check(context.Function<PFN_vkCreateImageView>("vkCreateImageView")(context.device, &viewInfo, nullptr, &storageView), "vkCreateImageView multisampled target storage");
+        }
+        recordCommands(context, [&](VkCommandBuffer commands, Recorder* recorder) {
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            if (recorder != nullptr) Recorder::CountBarriers(Recorder::CommandClass::Draw, 1);
+        });
+        storageWritten = true;
+        return storageView;
+    }
+
     std::shared_ptr<Texture> Sampled(VkComponentMapping components) {
         Require(sampleable, "the device cannot sample the multisampled color target's format at its sample count");
         Require(cmask.Refusal().empty(), cmask.Refusal());
         Require(cmask.Keys() != DccKeys::Clear0000, "sampling a multisampled color target whose CMASK fast clear no draw has applied is not implemented");
         Require(Recorder::Active() != nullptr, "a multisampled color target is only sampled by recorded draws and dispatches");
+        SettleStorageWrites();
         ApplyFastClear(target);
         recordCommands(context, [&](VkCommandBuffer commands, Recorder*) {
             RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
@@ -181,14 +221,19 @@ public:
     VkRenderPass resolvePass = VK_NULL_HANDLE;
     MultisampledCmask cmask;
     MultisampledColorFill colorFill;
+    bool fromTexture = false;
 
 private:
     bool sampleable = false;
+    VkFormat storageFormat = VK_FORMAT_UNDEFINED;
+    VkImageView storageView = VK_NULL_HANDLE;
+    bool storageWritten = false;
     std::map<std::array<std::uint32_t, 4>, std::shared_ptr<Texture>> textures;
 
     void release() noexcept {
         textures.clear();
         if (resolvePass) context.Function<PFN_vkDestroyRenderPass>("vkDestroyRenderPass")(context.device, resolvePass, nullptr);
+        if (storageView) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, storageView, nullptr);
         if (view) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, view, nullptr);
         if (image) context.Function<PFN_vkDestroyImage>("vkDestroyImage")(context.device, image, nullptr);
         if (memory) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, memory, nullptr);
@@ -257,10 +302,36 @@ std::vector<std::unique_ptr<MultisampleTarget>>& targets() {
     return list;
 }
 
+ColorTarget textureTarget(const GuestTextureResource& resource) {
+    Require(resource.dimension == TextureDimension::k2DMsaa && resource.mipCount == 1 && resource.baseLevel == 0 && resource.baseArray == 0, "only a single-level 2D multisampled texture is created as a multisampled color target");
+    std::optional<ColorTileMode> mode;
+    for (const auto candidate : {ColorTileMode::Standard4KB, ColorTileMode::Standard64KB, ColorTileMode::S4KBX, ColorTileMode::D4KBX, ColorTileMode::D64KBX, ColorTileMode::RenderTarget}) {
+        if (ColorTextureTileMode(candidate) == resource.tileMode) mode = candidate;
+    }
+    Require(mode.has_value(), "a multisampled texture whose tile mode no color target uses is not created as a multisampled color target");
+    ColorTarget color{};
+    color.address = resource.baseAddress;
+    color.surfaceAddress = resource.baseAddress;
+    color.pipeBankXor = resource.pipeBankXor;
+    color.extent = {resource.width, resource.height};
+    color.surfaceExtent = color.extent;
+    color.format = ResolveTextureFormat(resource.format);
+    color.elementBytes = BytesPerElement(resource.format);
+    color.tileMode = *mode;
+    color.bytes = ColorTargetLayout(resource.width, resource.height, *mode, color.elementBytes).Bytes();
+    color.samples = resource.samples;
+    return color;
+}
+
 MultisampleTarget& acquire(const Context& context, const ColorTarget& use) {
     for (const auto& target : targets()) {
         if (target->context.device != context.device || !sameTarget(target->target, use)) continue;
+        if (target->fromTexture && use.cmaskAddress != 0) {
+            target->fromTexture = false;
+            target->cmask = MultisampledCmask(use.cmaskAddress, use.cmaskBytes);
+        }
         target->cmask.CheckAddress(use.cmaskAddress);
+        target->SettleStorageWrites();
         target->ApplyFastClear(use);
         return *target;
     }
@@ -401,6 +472,26 @@ std::shared_ptr<Texture> MultisampleTargetTexture(const Context& context, const 
     char text[320];
     if (other != nullptr) std::snprintf(text, sizeof(text), "AGC graphics: sampling multisampled color target 0x%llx (%ux%u, %u samples, vk format %d) as a %ux%u texture of %u samples and guest format %u (vk %d) is not implemented", static_cast<unsigned long long>(resource.baseAddress), other->target.extent.width, other->target.extent.height, other->target.samples, static_cast<int>(other->target.format), resource.width, resource.height, resource.samples, resource.format, static_cast<int>(format));
     else std::snprintf(text, sizeof(text), "AGC graphics: sampling the %ux%u multisampled texture 0x%llx of %u samples, which no draw rendered to, is not implemented", resource.width, resource.height, static_cast<unsigned long long>(resource.baseAddress), resource.samples);
+    throw std::runtime_error(text);
+}
+
+VkImageView MultisampleTargetStorageView(const Context& context, const GuestTextureResource& resource) {
+    std::lock_guard lock(targetsMutex());
+    const auto format = ResolveTextureFormat(resource.format);
+    const MultisampleTarget* other = nullptr;
+    for (const auto& target : targets()) {
+        if (target->context.device != context.device || target->target.surfaceAddress != resource.baseAddress) continue;
+        const auto& rendered = target->target;
+        if (rendered.format == format && rendered.extent.width == resource.width && rendered.extent.height == resource.height && rendered.samples == resource.samples && rendered.mip == 0) return target->Storage(StorageFormatForGuest(context, resource.format));
+        other = target.get();
+    }
+    if (other == nullptr) {
+        auto& created = acquire(context, textureTarget(resource));
+        created.fromTexture = true;
+        return created.Storage(StorageFormatForGuest(context, resource.format));
+    }
+    char text[320];
+    std::snprintf(text, sizeof(text), "AGC graphics: storage image access to multisampled color target 0x%llx (%ux%u, %u samples, vk format %d) as a %ux%u texture of %u samples and guest format %u (vk %d) is not implemented", static_cast<unsigned long long>(resource.baseAddress), other->target.extent.width, other->target.extent.height, other->target.samples, static_cast<int>(other->target.format), resource.width, resource.height, resource.samples, resource.format, static_cast<int>(format));
     throw std::runtime_error(text);
 }
 

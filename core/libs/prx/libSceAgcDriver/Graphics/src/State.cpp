@@ -964,6 +964,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
         Require(((exportFormat >> 4u) & 0xfu) == (exportFormat & 0xfu), "dual-source blending needs the MRT1 export in the MRT0 export format");
         Require(((shaderMask >> 4u) & 0xfu) == (shaderMask & 0xfu), "dual-source blending needs the MRT1 export with the MRT0 shader mask");
     }
+    if (result.alphaToCoverage && (exportFormat & 0xfu) == 0u && std::none_of(result.colors.begin(), result.colors.end(), [](const ColorTarget& color) { return color.exportIndex == 0; })) result.alphaToCoverage = false;
     if (result.alphaToCoverage) {
         const auto mrt0 = std::find_if(result.colors.begin(), result.colors.end(), [](const ColorTarget& color) { return color.exportIndex == 0; });
         const auto format = exportFormat & 0xfu;

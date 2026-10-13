@@ -182,24 +182,7 @@ DeviceBuffer::DeviceBuffer(const Context& context, std::size_t size, VkBufferUsa
         allocation.allocationSize = ClassAllocationBytes(requirements, capacity);
         allocationBytes = allocation.allocationSize;
         allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        try {
-            memory = cache->AllocateMemory(allocation, "vkAllocateMemory device buffer");
-        } catch (const std::exception&) {
-            static const bool fallback = std::getenv("APS5_HOST_MEMORY_FALLBACK") != nullptr;
-            if (!fallback) throw;
-            std::uint32_t host = UINT32_MAX;
-            for (std::uint32_t type = 0; type < context.memory.memoryTypeCount; ++type) {
-                if ((requirements.memoryTypeBits & (1u << type)) != 0 && (context.memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) {
-                    host = type;
-                    break;
-                }
-            }
-            if (host == UINT32_MAX) throw;
-            allocation.memoryTypeIndex = host;
-            memory = cache->AllocateMemory(allocation, "vkAllocateMemory device buffer in host memory");
-            static std::atomic<int> reports{0};
-            if (reports.fetch_add(1) < 16) std::fprintf(stderr, "[bufferpool] device buffer of %llu bytes placed in host memory type %u\n", static_cast<unsigned long long>(allocation.allocationSize), host);
-        }
+        memory = cache->AllocateMemory(allocation, "vkAllocateMemory device buffer");
         Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, 0), "vkBindBufferMemory device");
     } catch (...) {
         release();

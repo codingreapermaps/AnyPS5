@@ -139,7 +139,7 @@ ColorTargetLayout::ColorTargetLayout(std::uint32_t width, std::uint32_t height, 
             const auto& tables = equationTables(mode, bytesPerElement, blockWidth, blockHeight);
             xOffsets = tables.x.data();
             yOffsets = tables.y.data();
-            if (mode == ColorTileMode::RenderTarget) equation = FindTextureSwizzleEquation(static_cast<std::uint32_t>(mode), bytesPerElement);
+            if (mode == ColorTileMode::RenderTarget || mode == ColorTileMode::Z64KBX) equation = FindTextureSwizzleEquation(static_cast<std::uint32_t>(mode), bytesPerElement);
             break;
         }
         case ColorTileMode::Standard4KB:

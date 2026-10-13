@@ -523,6 +523,9 @@ DecodedColorFormat DecodeColorFormat(std::uint32_t format, std::uint32_t number,
             if (swap != 0 || (number != floating && number != unorm)) return fail();
             if (number == unorm) return {VK_FORMAT_R32_UINT, 4, 0xe4u, ShaderRecompiler::ColorExportPacking::Unorm10_11_11};
             return {VK_FORMAT_B10G11R11_UFLOAT_PACK32, 4};
+        case 7:
+            if (swap != 0 || number != floating) return fail();
+            return {VK_FORMAT_R32_UINT, 4, 0xe4u, ShaderRecompiler::ColorExportPacking::Float11_11_10};
         case 9:
             // COLOR_2_10_10_10 keeps red in the low bits, the Vulkan A2B10G10R10 packing.
             if (number != unorm) return fail();
@@ -935,10 +938,11 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
             }
         }
         if (color.packing != ShaderRecompiler::ColorExportPacking::None) {
+            const std::string packed = PackedColorTargetName(color.packing);
             const auto slotExport = (exportFormat >> (4u * color.exportIndex)) & 0xfu;
-            if (slotExport == 5 || slotExport == 6) throw std::runtime_error("AGC graphics: color export format " + std::to_string(slotExport) + " into a 10_11_11 unorm target is unsupported");
-            Require(!state.blendEnable, "blending into a 10_11_11 unorm color target is unsupported");
-            Require((exportedMask & 7u) == 7u, "partial writes of a 10_11_11 unorm color target are unsupported");
+            if (slotExport == 5 || slotExport == 6) throw std::runtime_error("AGC graphics: color export format " + std::to_string(slotExport) + " into a " + packed + " target is unsupported");
+            Require(!state.blendEnable, "blending into a " + packed + " color target is unsupported");
+            Require((exportedMask & 7u) == 7u, "partial writes of a " + packed + " color target are unsupported");
         }
         if (state.blendEnable && (secondSource(state.srcColorBlendFactor) || secondSource(state.dstColorBlendFactor) || secondSource(state.srcAlphaBlendFactor) || secondSource(state.dstAlphaBlendFactor))) {
             const auto addition = [](VkBlendOp op) { return op == VK_BLEND_OP_ADD || op == VK_BLEND_OP_SUBTRACT || op == VK_BLEND_OP_REVERSE_SUBTRACT; };
@@ -966,6 +970,10 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     }
     APS5_LOG_OUT_DEBUG("DecodeState done colorTarget=%u render=%ux%u topology=%u", result.hasColorTarget ? 1u : 0u, result.renderExtent.width, result.renderExtent.height, static_cast<unsigned>(result.topology));
     return result;
+}
+
+std::string PackedColorTargetName(ShaderRecompiler::ColorExportPacking packing) {
+    return packing == ShaderRecompiler::ColorExportPacking::Float11_11_10 ? "11_11_10 float" : "10_11_11 unorm";
 }
 
 std::array<ShaderRecompiler::ColorExportPacking, 8> ExportPackings(const State& state) {
@@ -1136,8 +1144,9 @@ ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot) {
     color.format = decoded.format;
     color.componentMapping = decoded.componentMapping;
     color.packing = decoded.packing;
-    Require(color.packing == ShaderRecompiler::ColorExportPacking::None || (info & 0x10000000u) == 0, "DCC-compressed 10_11_11 unorm color targets are unsupported");
-    Require(color.packing == ShaderRecompiler::ColorExportPacking::None || (info & 0x00040000u) == 0, "truncating (ROUND_MODE) 10_11_11 unorm color targets are unsupported");
+    Require(color.packing == ShaderRecompiler::ColorExportPacking::None || (info & 0x10000000u) == 0, "DCC-compressed " + PackedColorTargetName(color.packing) + " color targets are unsupported");
+    Require(color.packing != ShaderRecompiler::ColorExportPacking::Unorm10_11_11 || (info & 0x00040000u) == 0, "truncating (ROUND_MODE) 10_11_11 unorm color targets are unsupported");
+    Require(color.packing != ShaderRecompiler::ColorExportPacking::Float11_11_10 || (info & 0x00040000u) != 0, "11_11_10 float color targets rounded to nearest (ROUND_MODE 0) are unsupported");
     for (std::uint32_t word = 0; word < 2; ++word) {
         const auto clear = find(cx, 0x323 + word + stride);
         color.clearWords[word] = clear == cx.end() ? 0u : clear->second;

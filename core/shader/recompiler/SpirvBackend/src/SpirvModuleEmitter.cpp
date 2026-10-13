@@ -338,7 +338,7 @@ std::uint32_t ExportVector(SpirvValueEmitContext& ctx, std::uint32_t data, const
         ConstantU32(state, uintOutput ? 1u : 0x3f800000u),
     };
     const auto mode = MrtOutputMode(state, exp);
-    const auto exported = exp.en & (mode == 1u ? 0x1u : mode == 2u ? 0x3u : mode == 3u ? 0x9u : 0xfu);
+    const auto exported = exp.en & (mode == 1u ? 0x1u : mode == 2u ? 0x3u : 0xfu);
     if (exp.compr) {
         for (std::uint32_t pair = 0; pair < 2u; pair++) {
             if ((exp.en & (3u << (pair * 2u))) == 0u) {
@@ -354,6 +354,9 @@ std::uint32_t ExportVector(SpirvValueEmitContext& ctx, std::uint32_t data, const
                 state.module.AddFunction(spv::OpBitFieldUExtract, TypeU32(state), raw.at(component), packed, ConstantU32(state, lane * 16u), ConstantU32(state, 16u));
             }
         }
+    } else if (mode == 3u) {
+        if ((exp.en & 1u) != 0u) raw[0] = ExportRawComponent(ctx, data, 0u);
+        if ((exp.en & 2u) != 0u) raw[3] = ExportRawComponent(ctx, data, 1u);
     } else {
         for (std::uint32_t component = 0; component < 4u; component++) {
             if (((exported >> component) & 1u) != 0u) {

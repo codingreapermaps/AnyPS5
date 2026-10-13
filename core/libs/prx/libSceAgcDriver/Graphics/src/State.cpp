@@ -941,7 +941,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
             const std::string packed = PackedColorTargetName(color.packing);
             const auto slotExport = (exportFormat >> (4u * color.exportIndex)) & 0xfu;
             if (slotExport == 5 || slotExport == 6) throw std::runtime_error("AGC graphics: color export format " + std::to_string(slotExport) + " into a " + packed + " target is unsupported");
-            Require(!state.blendEnable, "blending into a " + packed + " color target is unsupported");
+            Require(!state.blendEnable, "blending into a " + packed + " color target is unsupported (color " + std::to_string(static_cast<int>(state.srcColorBlendFactor)) + " " + std::to_string(static_cast<int>(state.colorBlendOp)) + " " + std::to_string(static_cast<int>(state.dstColorBlendFactor)) + ", alpha " + std::to_string(static_cast<int>(state.srcAlphaBlendFactor)) + " " + std::to_string(static_cast<int>(state.alphaBlendOp)) + " " + std::to_string(static_cast<int>(state.dstAlphaBlendFactor)) + ")");
             Require((exportedMask & 7u) == 7u, "partial writes of a " + packed + " color target are unsupported");
         }
         if (state.blendEnable && (secondSource(state.srcColorBlendFactor) || secondSource(state.dstColorBlendFactor) || secondSource(state.srcAlphaBlendFactor) || secondSource(state.dstAlphaBlendFactor))) {

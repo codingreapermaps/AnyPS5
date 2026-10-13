@@ -516,8 +516,9 @@ private:
         for (auto& access : accesses) {
             if (access.kind == TessellationAttribute::LocalOutput) agree(localStride, access.address.relative, access.pc);
             if (access.kind == TessellationAttribute::ControlInput && access.address.vertex != 0) agree(localStride, access.address.vertex, access.pc);
-            if (access.kind == TessellationAttribute::ControlInput && access.address.dynamic && access.address.relative > 0 && access.address.relative % inputs == 0) agree(localStride, access.address.relative / inputs, access.pc);
+            if (access.kind == TessellationAttribute::ControlInput && access.address.relative > 0 && access.address.relative % inputs == 0) agree(localStride, access.address.relative / inputs, access.pc);
             if (access.kind == TessellationAttribute::ControlOutput && access.address.vertex != 0) agree(controlStride, access.address.vertex, access.pc);
+            if (access.kind == TessellationAttribute::ControlOutput && outputs == 1 && access.address.vertex == 0 && access.address.relative > 0 && access.address.constant >= 0 && access.address.constant + 4 * static_cast<std::int64_t>(access.components) <= access.address.relative) agree(controlStride, access.address.relative, access.pc);
             if (access.kind == TessellationAttribute::EvaluationInput) {
                 const auto end = access.address.constant + 4 * static_cast<std::int64_t>(access.components);
                 if (access.address.relative > 0 && access.address.relative % outputs == 0 && access.address.constant >= 0 && end <= access.address.relative) {
@@ -549,6 +550,7 @@ private:
                 if (address.dynamic && (address.dynamicScale == 0 || address.dynamicScale % localStride != 0)) Fail("the hull shader reads LDS at a computed offset that is not a whole number of control points", access.pc);
                 break;
             case TessellationAttribute::ControlOutput:
+                if (outputs == 1 && address.vertex == 0 && controlStride != 0u && address.relative == controlStride && address.constant >= 0 && end <= controlStride) break;
                 if (address.vertex == 0) {
                     if (controlStride == 0u || evaluator.Lowest(address) < static_cast<std::int64_t>(tessellation.patchesPerGroup) * outputs * controlStride) Fail("the hull shader writes off-chip memory outside its control points and patch constants", access.pc);
                     record(access, end);
@@ -590,6 +592,32 @@ private:
         return address && address->dynamic && address->relative == static_cast<std::int64_t>(tessellation.inputControlPoints) * localStride;
     }
 
+    bool unreadWindowStore(IrValue* user, IrValue* value) {
+        if (user->Opcode() != IrOpcode::StoreVectorWindow || user->Argument(1)->Resolve() != value->Resolve() || user->Argument(0)->Resolve() == value->Resolve()) return false;
+        const auto loads = [](IrValue* inst) { return inst->Opcode() == IrOpcode::LoadVectorWindow; };
+        std::vector<IrBlock*> pending;
+        std::unordered_set<IrBlock*> visited;
+        bool found = false;
+        for (IrBlock* block : program.BlockOrder()) {
+            auto& instructions = block->Instructions();
+            const auto store = std::find(instructions.begin(), instructions.end(), user);
+            if (store == instructions.end()) continue;
+            if (std::any_of(std::next(store), instructions.end(), loads)) return false;
+            pending.assign(block->Successors().begin(), block->Successors().end());
+            found = true;
+            break;
+        }
+        if (!found) return false;
+        while (!pending.empty()) {
+            IrBlock* block = pending.back();
+            pending.pop_back();
+            if (!visited.insert(block).second) continue;
+            if (std::any_of(block->Instructions().begin(), block->Instructions().end(), loads)) return false;
+            pending.insert(pending.end(), block->Successors().begin(), block->Successors().end());
+        }
+        return true;
+    }
+
     void requireRelativeIndependence(const std::vector<IrValue*>& bases) {
         std::vector<IrValue*> pending(bases.begin(), bases.end());
         std::unordered_set<IrValue*> visited(bases.begin(), bases.end());
@@ -615,6 +643,7 @@ private:
                     break;
                 }
                 if (dynamicInputAddress(user, value)) continue;
+                if (unreadWindowStore(user, value)) continue;
                 const auto address = evaluator.Evaluate(value, nullptr);
                 if (!address || address->relative != 0) Fail("the relative patch or vertex index is used outside a tessellation ring or LDS address", 0u);
             }
@@ -622,6 +651,7 @@ private:
     }
 
     void requireFirstInvocation(const Access& access) {
+        if (tessellation.outputControlPoints == 1u) return;
         std::unordered_set<IrValue*> path;
         if (!FirstInvocationOnly(access.predicate, evaluator, path)) Fail("per-patch tessellation output is not written by control point 0 alone", access.pc);
     }

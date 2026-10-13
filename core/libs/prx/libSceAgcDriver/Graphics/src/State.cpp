@@ -967,7 +967,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     if (result.alphaToCoverage) {
         const auto mrt0 = std::find_if(result.colors.begin(), result.colors.end(), [](const ColorTarget& color) { return color.exportIndex == 0; });
         const auto format = exportFormat & 0xfu;
-        Require(format == 4u || format == 5u || format == 6u || format == 9u, "alpha-to-coverage needs an MRT0 export format with a floating-point alpha");
+        Require(format == 3u || format == 4u || format == 5u || format == 6u || format == 9u, "alpha-to-coverage needs an MRT0 export format with a floating-point alpha (format " + std::to_string(format) + ")");
         Require(mrt0 == result.colors.end() || (mrt0->componentMapping == 0xe4u && mrt0->packing == ShaderRecompiler::ColorExportPacking::None), "alpha-to-coverage into a component-swapped or packed MRT0 target is unsupported");
     }
     APS5_LOG_OUT_DEBUG("DecodeState done colorTarget=%u render=%ux%u topology=%u", result.hasColorTarget ? 1u : 0u, result.renderExtent.width, result.renderExtent.height, static_cast<unsigned>(result.topology));
